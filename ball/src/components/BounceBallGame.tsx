@@ -43,17 +43,21 @@ const loadIconImage = (iconPath: string): Promise<HTMLImageElement> => {
   })
 }
 
-// 랭킹 저장/로드 함수
-const saveScore = (score: number) => {
-  const scores = getScores()
+type GameMode = 'normal' | 'hard'
+
+// 랭킹 저장/로드 함수 (모드별로 분리)
+const saveScore = (score: number, mode: GameMode) => {
+  const key = mode === 'hard' ? 'bounceBallGameScoresHard' : 'bounceBallGameScores'
+  const scores = getScores(mode)
   scores.push({ score, date: new Date().toISOString() })
   scores.sort((a, b) => b.score - a.score) // 내림차순 정렬
   const topScores = scores.slice(0, 10) // 상위 10개만 저장
-  localStorage.setItem('bounceBallGameScores', JSON.stringify(topScores))
+  localStorage.setItem(key, JSON.stringify(topScores))
 }
 
-const getScores = (): Array<{ score: number; date: string }> => {
-  const saved = localStorage.getItem('bounceBallGameScores')
+const getScores = (mode: GameMode): Array<{ score: number; date: string }> => {
+  const key = mode === 'hard' ? 'bounceBallGameScoresHard' : 'bounceBallGameScores'
+  const saved = localStorage.getItem(key)
   return saved ? JSON.parse(saved) : []
 }
 
@@ -64,6 +68,8 @@ const BounceBallGame = () => {
   const [gameOver, setGameOver] = useState(false)
   const [score, setScore] = useState(0)
   const [showRanking, setShowRanking] = useState(false)
+  const [gameMode, setGameMode] = useState<GameMode>('normal')
+  const [selectedRankingMode, setSelectedRankingMode] = useState<GameMode>('normal')
   const [keys, setKeys] = useState<{ [key: string]: boolean }>({})
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationFrameRef = useRef<number | null>(null)
@@ -103,22 +109,41 @@ const BounceBallGame = () => {
   // 게임 오버 시 점수 저장
   useEffect(() => {
     if (gameOver && !scoreSavedRef.current) {
-      saveScore(score)
+      saveScore(score, gameMode)
       scoreSavedRef.current = true
     }
-  }, [gameOver, score])
+  }, [gameOver, score, gameMode])
 
   const PLAYER_RADIUS = 40
   const PLAYER_SPEED = 5
+  const PLAYER_DASH_SPEED = 10 // 대시 속도
   const ROTATION_SPEED = PLAYER_SPEED / PLAYER_RADIUS // 이동 거리에 비례한 회전 속도
+  const DASH_ROTATION_SPEED = PLAYER_DASH_SPEED / PLAYER_RADIUS // 대시 시 회전 속도
   const JUMP_SPEED = -15 // 점프 속도 (음수 = 위로)
   const GRAVITY = 0.8 // 중력
-  const OBSTACLE_BASE_SPAWN_INTERVAL = 800 // 밀리초 (더 자주 생성)
-  const OBSTACLE_MIN_SPAWN_INTERVAL = 300 // 최소 생성 간격
+  // 일반 모드 설정
+  const OBSTACLE_BASE_SPAWN_INTERVAL_NORMAL = 800
+  const OBSTACLE_MIN_SPAWN_INTERVAL_NORMAL = 300
+  const OBSTACLE_BASE_SPEED_NORMAL = 5
+  const OBSTACLE_SPEED_INCREASE_NORMAL = 0.2
+  const OBSTACLE_SPEED_VARIANCE_NORMAL = 2 // 랜덤 속도 범위
+  
+  // 하드 모드 설정 (더 어려움)
+  const OBSTACLE_BASE_SPAWN_INTERVAL_HARD = 600
+  const OBSTACLE_MIN_SPAWN_INTERVAL_HARD = 200
+  const OBSTACLE_BASE_SPEED_HARD = 8
+  const OBSTACLE_SPEED_INCREASE_HARD = 0.3
+  const OBSTACLE_SPEED_VARIANCE_HARD = 3 // 랜덤 속도 범위
+  
+  // 현재 모드에 따른 설정
+  const OBSTACLE_BASE_SPAWN_INTERVAL = gameMode === 'hard' ? OBSTACLE_BASE_SPAWN_INTERVAL_HARD : OBSTACLE_BASE_SPAWN_INTERVAL_NORMAL
+  const OBSTACLE_MIN_SPAWN_INTERVAL = gameMode === 'hard' ? OBSTACLE_MIN_SPAWN_INTERVAL_HARD : OBSTACLE_MIN_SPAWN_INTERVAL_NORMAL
+  const OBSTACLE_BASE_SPEED = gameMode === 'hard' ? OBSTACLE_BASE_SPEED_HARD : OBSTACLE_BASE_SPEED_NORMAL
+  const OBSTACLE_SPEED_INCREASE = gameMode === 'hard' ? OBSTACLE_SPEED_INCREASE_HARD : OBSTACLE_SPEED_INCREASE_NORMAL
+  const OBSTACLE_SPEED_VARIANCE = gameMode === 'hard' ? OBSTACLE_SPEED_VARIANCE_HARD : OBSTACLE_SPEED_VARIANCE_NORMAL
+  
   const OBSTACLE_WIDTH = 60 // 일정한 장애물 너비
   const OBSTACLE_HEIGHT = 60 // 일정한 장애물 높이
-  const OBSTACLE_BASE_SPEED = 5 // 기본 속도 증가
-  const OBSTACLE_SPEED_INCREASE = 0.2 // 속도 증가율 증가
 
   // 키보드 입력 처리
   useEffect(() => {
@@ -133,6 +158,9 @@ const BounceBallGame = () => {
         e.preventDefault() // 스크롤 방지
         setKeys(prev => ({ ...prev, space: true }))
       }
+      if (e.key === 'Shift') {
+        setKeys(prev => ({ ...prev, shift: true }))
+      }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -145,6 +173,9 @@ const BounceBallGame = () => {
       if (e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault()
         setKeys(prev => ({ ...prev, space: false }))
+      }
+      if (e.key === 'Shift') {
+        setKeys(prev => ({ ...prev, shift: false }))
       }
     }
 
@@ -172,14 +203,18 @@ const BounceBallGame = () => {
         const height = canvas.height
         const currentTime = Date.now()
 
-        // 플레이어 이동 (a/d 키) 및 회전
+        // 플레이어 이동 (a/d 키) 및 회전 (쉬프트 = 대시)
+        const isDashing = keys.shift
+        const currentSpeed = isDashing ? PLAYER_DASH_SPEED : PLAYER_SPEED
+        const currentRotationSpeed = isDashing ? DASH_ROTATION_SPEED : ROTATION_SPEED
+        
         if (keys.a && player.x - player.radius > 0) {
-          player.x -= PLAYER_SPEED
-          player.rotation -= ROTATION_SPEED // 왼쪽 이동 시 반시계 방향 회전
+          player.x -= currentSpeed
+          player.rotation -= currentRotationSpeed // 왼쪽 이동 시 반시계 방향 회전
         }
         if (keys.d && player.x + player.radius < width) {
-          player.x += PLAYER_SPEED
-          player.rotation += ROTATION_SPEED // 오른쪽 이동 시 시계 방향 회전
+          player.x += currentSpeed
+          player.rotation += currentRotationSpeed // 오른쪽 이동 시 시계 방향 회전
         }
 
         // 점프 (스페이스바) - 바닥에 있을 때만
@@ -216,7 +251,7 @@ const BounceBallGame = () => {
         const obstacleCount = 1 + Math.floor(difficultyLevel / 2) // 2레벨마다 장애물 1개씩 증가 (최대 5개)
         
         if (currentTime - lastObstacleTimeRef.current > spawnInterval) {
-          const speed = OBSTACLE_BASE_SPEED + (elapsedSeconds * OBSTACLE_SPEED_INCREASE) // 시간에 따라 속도 증가
+          const baseSpeed = OBSTACLE_BASE_SPEED + (elapsedSeconds * OBSTACLE_SPEED_INCREASE) // 시간에 따라 기본 속도 증가
           
           // 여러 개의 장애물 생성
           for (let i = 0; i < Math.min(obstacleCount, 5); i++) {
@@ -225,6 +260,9 @@ const BounceBallGame = () => {
             const randomIcon = obstacleImages.length > 0 
               ? obstacleImages[Math.floor(Math.random() * obstacleImages.length)]
               : null
+            // 랜덤 속도 추가 (기본 속도 + 랜덤 변동, 전체적으로는 빨라짐)
+            const randomSpeedOffset = (Math.random() - 0.5) * OBSTACLE_SPEED_VARIANCE // -VARIANCE/2 ~ +VARIANCE/2
+            const speed = Math.max(1, baseSpeed + randomSpeedOffset) // 최소 속도 1 보장
             
             obstaclesRef.current.push({
               x: obstacleX,
@@ -342,7 +380,7 @@ const BounceBallGame = () => {
         cancelAnimationFrame(animationFrameRef.current)
       }
     }
-  }, [isPlaying, gameOver, keys, obstacleImages])
+  }, [isPlaying, gameOver, keys, obstacleImages, gameMode])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -448,8 +486,28 @@ const BounceBallGame = () => {
     <div className="bounce-ball-game">
       <div className="game-controls">
         <h1>장애물 회피 게임</h1>
+        {!isPlaying && !gameOver && (
+          <div className="mode-selection">
+            <label>모드 선택:</label>
+            <div className="mode-buttons">
+              <button 
+                className={`mode-button ${gameMode === 'normal' ? 'active' : ''}`}
+                onClick={() => setGameMode('normal')}
+              >
+                일반 모드
+              </button>
+              <button 
+                className={`mode-button ${gameMode === 'hard' ? 'active' : ''}`}
+                onClick={() => setGameMode('hard')}
+              >
+                하드 모드
+              </button>
+            </div>
+          </div>
+        )}
         <div className="score-board">
           <div className="score">점수: {score}</div>
+          {gameMode === 'hard' && <div className="mode-badge hard">하드 모드</div>}
           {gameOver && <div className="game-over">게임 오버!</div>}
         </div>
         <div className="controls">
@@ -461,7 +519,7 @@ const BounceBallGame = () => {
           </button>
         </div>
         {isPlaying && !gameOver && (
-          <p className="hint">⌨️ A키: 왼쪽 이동 | D키: 오른쪽 이동 | 스페이스바: 점프</p>
+          <p className="hint">⌨️ A키: 왼쪽 이동 | D키: 오른쪽 이동 | 스페이스바: 점프 | 쉬프트: 대시</p>
         )}
       </div>
       <canvas 
@@ -489,10 +547,24 @@ const BounceBallGame = () => {
         <div className="ranking-modal">
           <div className="ranking-modal-content">
             <h2>랭킹</h2>
+            <div className="ranking-tabs">
+              <button 
+                className={`ranking-tab ${selectedRankingMode === 'normal' ? 'active' : ''}`}
+                onClick={() => setSelectedRankingMode('normal')}
+              >
+                일반 모드
+              </button>
+              <button 
+                className={`ranking-tab ${selectedRankingMode === 'hard' ? 'active' : ''}`}
+                onClick={() => setSelectedRankingMode('hard')}
+              >
+                하드 모드
+              </button>
+            </div>
             <div className="ranking-list">
-              {getScores().length > 0 ? (
+              {getScores(selectedRankingMode).length > 0 ? (
                 <ol>
-                  {getScores().map((record, index) => (
+                  {getScores(selectedRankingMode).map((record, index) => (
                     <li key={index}>
                       <span className="rank-number">{index + 1}위</span>
                       <span className="rank-score">{record.score}점</span>
