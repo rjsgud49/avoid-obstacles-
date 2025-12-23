@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import './BounceBallGame.css'
-import defaultBallImage from '../assets/IMG_5412.png'
+import defaultBallImage from '../assets/default-ball.svg'
 
 interface Player {
   x: number
