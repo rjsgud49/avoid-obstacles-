@@ -19,6 +19,7 @@ interface Obstacle {
   width: number
   height: number
   speed: number
+  image: HTMLImageElement | null
 }
 
 // 기본 이미지 로드 함수
@@ -28,17 +29,49 @@ const loadDefaultImage = (): HTMLImageElement => {
   return img
 }
 
+// 아이콘 이미지들을 동적으로 가져오기
+const iconModules = import.meta.glob('../assets/icon/*.svg', { eager: true })
+const iconPaths = Object.values(iconModules).map((module: any) => module.default) as string[]
+
+// 아이콘 이미지 로드 함수
+const loadIconImage = (iconPath: string): Promise<HTMLImageElement> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = iconPath
+  })
+}
+
+// 랭킹 저장/로드 함수
+const saveScore = (score: number) => {
+  const scores = getScores()
+  scores.push({ score, date: new Date().toISOString() })
+  scores.sort((a, b) => b.score - a.score) // 내림차순 정렬
+  const topScores = scores.slice(0, 10) // 상위 10개만 저장
+  localStorage.setItem('bounceBallGameScores', JSON.stringify(topScores))
+}
+
+const getScores = (): Array<{ score: number; date: string }> => {
+  const saved = localStorage.getItem('bounceBallGameScores')
+  return saved ? JSON.parse(saved) : []
+}
+
 const BounceBallGame = () => {
   const [ballImage, setBallImage] = useState<HTMLImageElement | null>(null)
+  const [obstacleImages, setObstacleImages] = useState<HTMLImageElement[]>([])
   const [isPlaying, setIsPlaying] = useState(false)
   const [gameOver, setGameOver] = useState(false)
   const [score, setScore] = useState(0)
+  const [showRanking, setShowRanking] = useState(false)
   const [keys, setKeys] = useState<{ [key: string]: boolean }>({})
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationFrameRef = useRef<number | null>(null)
   const playerRef = useRef<Player | null>(null)
   const obstaclesRef = useRef<Obstacle[]>([])
   const lastObstacleTimeRef = useRef<number>(0)
+  const scoreSavedRef = useRef<boolean>(false)
+  const gameStartTimeRef = useRef<number>(0)
 
   // 기본 이미지 초기화
   useEffect(() => {
@@ -52,6 +85,29 @@ const BounceBallGame = () => {
     }
   }, [])
 
+  // 아이콘 이미지들 초기화
+  useEffect(() => {
+    const loadAllIcons = async () => {
+      try {
+        const images = await Promise.all(
+          iconPaths.map(path => loadIconImage(path))
+        )
+        setObstacleImages(images)
+      } catch (error) {
+        console.error('아이콘 이미지 로드 실패:', error)
+      }
+    }
+    loadAllIcons()
+  }, [])
+
+  // 게임 오버 시 점수 저장
+  useEffect(() => {
+    if (gameOver && !scoreSavedRef.current) {
+      saveScore(score)
+      scoreSavedRef.current = true
+    }
+  }, [gameOver, score])
+
   const PLAYER_RADIUS = 40
   const PLAYER_SPEED = 5
   const ROTATION_SPEED = PLAYER_SPEED / PLAYER_RADIUS // 이동 거리에 비례한 회전 속도
@@ -59,9 +115,8 @@ const BounceBallGame = () => {
   const GRAVITY = 0.8 // 중력
   const OBSTACLE_BASE_SPAWN_INTERVAL = 800 // 밀리초 (더 자주 생성)
   const OBSTACLE_MIN_SPAWN_INTERVAL = 300 // 최소 생성 간격
-  const OBSTACLE_MIN_WIDTH = 60
-  const OBSTACLE_MAX_WIDTH = 120
-  const OBSTACLE_HEIGHT = 60
+  const OBSTACLE_WIDTH = 60 // 일정한 장애물 너비
+  const OBSTACLE_HEIGHT = 60 // 일정한 장애물 높이
   const OBSTACLE_BASE_SPEED = 5 // 기본 속도 증가
   const OBSTACLE_SPEED_INCREASE = 0.2 // 속도 증가율 증가
 
@@ -150,28 +205,34 @@ const BounceBallGame = () => {
           player.vy = 0
         }
 
-        // 장애물 생성 (난이도에 따라 간격과 개수 조절)
-        const difficultyLevel = Math.floor(score / 8) // 8점마다 난이도 증가 (더 빠른 증가)
+        // 장애물 생성 (시간에 따라 난이도 증가)
+        const elapsedTime = currentTime - gameStartTimeRef.current // 경과 시간 (밀리초)
+        const elapsedSeconds = elapsedTime / 1000 // 초 단위
+        const difficultyLevel = Math.floor(elapsedSeconds / 5) // 5초마다 난이도 증가
         const spawnInterval = Math.max(
           OBSTACLE_MIN_SPAWN_INTERVAL,
-          OBSTACLE_BASE_SPAWN_INTERVAL - (difficultyLevel * 80) // 더 빠르게 간격 감소
+          OBSTACLE_BASE_SPAWN_INTERVAL - (difficultyLevel * 80) // 난이도에 따라 간격 감소
         )
         const obstacleCount = 1 + Math.floor(difficultyLevel / 2) // 2레벨마다 장애물 1개씩 증가 (최대 5개)
         
         if (currentTime - lastObstacleTimeRef.current > spawnInterval) {
-          const speed = OBSTACLE_BASE_SPEED + (score * OBSTACLE_SPEED_INCREASE)
+          const speed = OBSTACLE_BASE_SPEED + (elapsedSeconds * OBSTACLE_SPEED_INCREASE) // 시간에 따라 속도 증가
           
           // 여러 개의 장애물 생성
           for (let i = 0; i < Math.min(obstacleCount, 5); i++) {
-            const obstacleWidth = Math.random() * (OBSTACLE_MAX_WIDTH - OBSTACLE_MIN_WIDTH) + OBSTACLE_MIN_WIDTH
-            const obstacleX = Math.random() * (width - obstacleWidth)
+            const obstacleX = Math.random() * (width - OBSTACLE_WIDTH)
+            // 랜덤 아이콘 선택
+            const randomIcon = obstacleImages.length > 0 
+              ? obstacleImages[Math.floor(Math.random() * obstacleImages.length)]
+              : null
             
             obstaclesRef.current.push({
               x: obstacleX,
               y: -OBSTACLE_HEIGHT - (i * OBSTACLE_HEIGHT * 0.5), // 약간씩 간격을 두고 생성
-              width: obstacleWidth,
+              width: OBSTACLE_WIDTH,
               height: OBSTACLE_HEIGHT,
               speed: speed,
+              image: randomIcon,
             })
           }
           lastObstacleTimeRef.current = currentTime
@@ -222,11 +283,22 @@ const BounceBallGame = () => {
 
         // 장애물 그리기
         obstaclesRef.current.forEach(obstacle => {
-          ctx.fillStyle = '#e74c3c'
-          ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
-          ctx.strokeStyle = '#c0392b'
-          ctx.lineWidth = 2
-          ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+          if (obstacle.image) {
+            ctx.drawImage(
+              obstacle.image,
+              obstacle.x,
+              obstacle.y,
+              obstacle.width,
+              obstacle.height
+            )
+          } else {
+            // 이미지가 없는 경우 폴백으로 빨간 박스 표시
+            ctx.fillStyle = '#e74c3c'
+            ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+            ctx.strokeStyle = '#c0392b'
+            ctx.lineWidth = 2
+            ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+          }
         })
 
         // 플레이어 그리기 (회전 적용)
@@ -270,7 +342,7 @@ const BounceBallGame = () => {
         cancelAnimationFrame(animationFrameRef.current)
       }
     }
-  }, [isPlaying, gameOver, keys, score])
+  }, [isPlaying, gameOver, keys, obstacleImages])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -307,17 +379,26 @@ const BounceBallGame = () => {
 
     playerRef.current = player
     obstaclesRef.current = []
-    lastObstacleTimeRef.current = Date.now()
+    const startTime = Date.now()
+    gameStartTimeRef.current = startTime
+    lastObstacleTimeRef.current = startTime
     setScore(0)
     setGameOver(false)
     setIsPlaying(true)
+    scoreSavedRef.current = false
+    setShowRanking(false)
   }
 
-  const stopGame = () => {
-    setIsPlaying(false)
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-    }
+
+  const restartGame = () => {
+    // 상태 초기화
+    setGameOver(false)
+    setScore(0)
+    obstaclesRef.current = []
+    scoreSavedRef.current = false
+    setShowRanking(false)
+    // 게임 시작
+    startGame()
   }
 
   const resetGame = () => {
@@ -332,6 +413,8 @@ const BounceBallGame = () => {
     setScore(0)
     obstaclesRef.current = []
     lastObstacleTimeRef.current = Date.now()
+    scoreSavedRef.current = false
+    setShowRanking(false)
     
     // 플레이어 초기화
     if (canvasRef.current) {
@@ -373,9 +456,6 @@ const BounceBallGame = () => {
           <button onClick={startGame} disabled={isPlaying && !gameOver}>
             {gameOver ? '다시 시작' : '시작'}
           </button>
-          <button onClick={stopGame} disabled={!isPlaying || gameOver}>
-            정지
-          </button>
           <button onClick={resetGame}>
             리셋
           </button>
@@ -389,6 +469,47 @@ const BounceBallGame = () => {
         className="game-canvas"
         tabIndex={0}
       />
+      {gameOver && (
+        <div className="game-over-modal">
+          <div className="game-over-modal-content">
+            <h2>나 이거 싫어요!</h2>
+            <div className="final-score">최종 점수: {score}점</div>
+            <div className="modal-buttons">
+              <button className="modal-button restart-button" onClick={restartGame}>
+                다시하기
+              </button>
+              <button className="modal-button ranking-button" onClick={() => setShowRanking(true)}>
+                랭킹보기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showRanking && (
+        <div className="ranking-modal">
+          <div className="ranking-modal-content">
+            <h2>랭킹</h2>
+            <div className="ranking-list">
+              {getScores().length > 0 ? (
+                <ol>
+                  {getScores().map((record, index) => (
+                    <li key={index}>
+                      <span className="rank-number">{index + 1}위</span>
+                      <span className="rank-score">{record.score}점</span>
+                      <span className="rank-date">{new Date(record.date).toLocaleDateString()}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="no-ranking">아직 기록이 없습니다.</p>
+              )}
+            </div>
+            <button className="modal-button close-button" onClick={() => setShowRanking(false)}>
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
